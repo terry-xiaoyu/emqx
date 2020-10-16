@@ -33,11 +33,13 @@ listeners:
   mqtt_tcp:
     - name: mqtt_over_tcp
       bind: 0.0.0.0:1883
+      mqtt_zone: default
       acceptors: 8
       max_conn_rate: 1000
       max_connections: 1024000
     - name: mqtt_over_ssl
       bind: 8883
+      mqtt_zone: default
       enable_ssl: on
       acceptors: 16
       max_conn_rate: 1000
@@ -59,12 +61,14 @@ listeners:
   mqtt_ws:
     - name : mqtt_over_websocket
       bind: 8083
+      mqtt_zone: default
       mqtt_path: /mqtt
       acceptors: 4
       max_conn_rate: 1000
       max_connections: 102400
     - name: mqtt_over_websocket_ssl
       bind: 8084
+      mqtt_zone: default
       enable_ssl: on
       mqtt_path: /mqtt
       acceptors: 4

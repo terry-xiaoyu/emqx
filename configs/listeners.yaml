@@ -21,7 +21,7 @@ listeners:
       ## See 'mqtt.yaml' for details of all MQTT zones.
       ##
       ## It will use the 'default' zone if not set.
-      #mqtt_zone: default
+      mqtt_zone: default
 
       ## Enable SSL
       ##
@@ -102,7 +102,7 @@ listeners:
       ## See 'mqtt.yaml' for details of all MQTT zones.
       ##
       ## It will use the 'default' zone if not set.
-      #mqtt_zone: default
+      mqtt_zone: default
 
       ## Enable SSL
       ##
@@ -206,7 +206,7 @@ listeners:
       ## See 'mqtt.yaml' for details of all MQTT zones.
       ##
       ## It will use the 'default' zone if not set.
-      #mqtt_zone: default
+      mqtt_zone: default
 
       ## Enable SSL
       ##
@@ -300,7 +300,7 @@ listeners:
       ## See 'mqtt.yaml' for details of all MQTT zones.
       ##
       ## It will use the 'default' zone if not set.
-      #mqtt_zone: default
+      mqtt_zone: default
 
       ## Enable SSL
       ##
