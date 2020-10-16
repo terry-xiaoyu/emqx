@@ -1,0 +1,85 @@
+node:
+  name: emqx@127.0.0.1
+  cookie: emqxsecretcookie
+  data_dir: {{ platform_data_dir }}
+  global_gc_interval: 15m
+  crash_dump: {{ platform_log_dir }}/crash.dump
+cluster:
+  name: emqxcl
+  proto_dist: inet_tcp
+  discovery: manual
+  autoheal: on
+  autoclean: 5m
+log:
+  level: warning
+  handlers:
+    file:
+      - level: all
+        filepath: {{ platform_log_dir }}/emqx.log
+    console:
+rpc:
+  mode: async
+  async_batch_size: 256
+  port_discovery: stateless
+  tcp_client_num: 1
+broker:
+  sys_msg_interval: 1m
+  sys_heartbeat_interval: 30s
+  session_locking_strategy: quorum
+  shared_subscription_strategy: random
+  shared_dispatch_ack_enabled: false
+  route_batch_clean: off
+listeners:
+  mqtt_tcp:
+    - name: mqtt_over_tcp
+      bind: 0.0.0.0:1883
+      acceptors: 8
+      max_conn_rate: 1000
+      max_connections: 1024000
+    - name: mqtt_over_ssl
+      bind: 8883
+      enable_ssl: on
+      acceptors: 16
+      max_conn_rate: 1000
+      max_connections: 102400
+    - name: internal_mqtt_over_tcp
+      bind: 127.0.0.1:11883
+      mqtt_zone: internal
+      acceptors: 4
+      max_connections: 1024000
+      max_conn_rate: 1000
+      active_n: 1000
+      tcp_options:
+        backlog: 512
+        send_timeout: 5s
+        send_timeout_close: on
+        recbuf: 64KB
+        sndbuf: 64KB
+        buffer: 16KB
+  mqtt_ws:
+    - name : mqtt_over_websocket
+      bind: 8083
+      mqtt_path: /mqtt
+      acceptors: 4
+      max_conn_rate: 1000
+      max_connections: 102400
+    - name: mqtt_over_websocket_ssl
+      bind: 8084
+      enable_ssl: on
+      mqtt_path: /mqtt
+      acceptors: 4
+      max_conn_rate: 1000
+      max_connections: 102400
+tcp_options:
+  send_timeout: 15s
+  recbuf: 4KB
+  sndbuf: 4KB
+  buffer: 4KB
+ssl_options:
+  reuse_sessions: on
+  handshake_timeout: 15s
+  keyfile: {{ platform_etc_dir }}/certs/key.pem
+  certfile: {{ platform_etc_dir }}/certs/cert.pem
+  cacertfile: {{ platform_etc_dir }}/certs/cacert.pem
+websocket_options:
+  idle_timeout: 60s

@@ -1,0 +1,30 @@
+##--------------------------------------------------------------------
+## Alarm
+##--------------------------------------------------------------------
+#alarm:
+  ## Specifies the actions to take when an alarm is activated
+  ##
+  ## Value: String
+  ##  - log
+  ##  - publish
+  ##
+  ## Default: log,publish
+  #actions: log,publish
+
+  ## The maximum number of deactivated alarms
+  ##
+  ## Value: Integer
+  ##
+  ## Default: 1000
+  #size_limit: 1000
+
+  ## Validity Period of deactivated alarms
+  ##
+  ## Value: Duration
+  ##  - h: hour
+  ##  - m: minute
+  ##  - s: second
+  ##  - ms: milliseconds
+  ##
+  ## Default: 24h
+  #validity_period: 24h
