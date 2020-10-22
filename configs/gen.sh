@@ -1,6 +1,6 @@
 #!/bin/sh
 
-for file in config_examples/*.conf;
+for file in examples/*.conf;
 do
     basef=$(basename $file)
     sed 's/^[[:blank:]]*##==/==/;/^[[:blank:]]*##/d;s/#[^@].*//;/^[[:blank:]]*$/d;s/#@/#/;s/^==*=$//;' $file | sed '/^$/N;/\n$/D;' > ./$basef
