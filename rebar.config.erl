@@ -94,7 +94,7 @@ project_app_dirs(Edition) ->
     end.
 
 plugins() ->
-    [ {relup_helper,{git,"https://github.com/emqx/relup_helper", {tag, "2.0.0"}}}
+    [ {relup_helper,{git,"https://github.com/emqx/relup_helper", {tag, "2.1.0"}}}
     , {er_coap_client, {git, "https://github.com/emqx/er_coap_client", {tag, "v1.0.4"}}}
       %% emqx main project does not require port-compiler
       %% pin at root level for deterministic
@@ -118,6 +118,7 @@ test_deps() ->
 common_compile_opts(Vsn) ->
     [ debug_info % always include debug_info
     , {compile_info, [{emqx_vsn, Vsn}]}
+    , {parse_transform, relup_helper_mod_vsn}
     ] ++
     [{d, 'EMQX_BENCHMARK'} || os:getenv("EMQX_BENCHMARK") =:= "1" ].
 
