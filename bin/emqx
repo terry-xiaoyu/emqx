@@ -321,6 +321,14 @@ fi
 
 NO_EPMD="-start_epmd false -epmd_module ekka_epmd -proto_dist ekka"
 EPMD_ARGS="${EPMD_ARGS:-${NO_EPMD}}"
+case "$(uname -s)" in
+    Darwin)
+        JQ_OPTS="-jq jq_implementation_module jq_nif"
+        ;;
+    *)
+        JQ_OPTS="-jq jq_implementation_module jq_port"
+        ;;
+esac
 
 # Warn the user if ulimit -n is less than 1024
 ULIMIT_F=$(ulimit -n)
@@ -484,7 +492,7 @@ relx_escript() {
 # Output a start command for the last argument of run_erl
 relx_start_command() {
     printf "exec \"%s\" \"%s\"" "$RUNNER_SCRIPT" \
-           "$START_OPTION"
+           "$START_OPTION" "$JQ_OPTS"
 }
 
 # Function to generate app.config and vm.args
@@ -919,7 +927,8 @@ case "${COMMAND}" in
                 -mode "$CODE_LOADING_MODE" \
                 -config "$CONF_FILE" \
                 -args_file "$ARGS_FILE" \
-                $EPMD_ARGS
+                $EPMD_ARGS \
+                $JQ_OPTS
         else
             set -- "$REL_DIR/iex" \
                 --boot "$BOOTFILE" \
@@ -929,6 +938,7 @@ case "${COMMAND}" in
                 --erl "$FOREGROUNDOPTIONS" \
                 --erl "-mode $CODE_LOADING_MODE" \
                 --erl "$EPMD_ARGS" \
+                --erl "$JQ_OPTS" \
                 --werl
         fi
 
