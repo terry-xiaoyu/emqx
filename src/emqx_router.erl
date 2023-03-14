@@ -118,7 +118,7 @@ do_add_route(Topic, Dest) when is_binary(Topic) ->
         false ->
             ok = emqx_router_helper:monitor(Dest),
             case emqx_topic:wildcard(Topic) of
-                true  -> trans(fun insert_trie_route/1, [Route]);
+                true  -> maybe_trans(fun insert_trie_route/1, [Route]);
                 false -> insert_direct_route(Route)
             end
     end.
@@ -164,7 +164,7 @@ do_delete_route(Topic) when is_binary(Topic) ->
 do_delete_route(Topic, Dest) ->
     Route = #route{topic = Topic, dest = Dest},
     case emqx_topic:wildcard(Topic) of
-        true  -> trans(fun delete_trie_route/1, [Route]);
+        true  -> maybe_trans(fun delete_trie_route/1, [Route]);
         false -> delete_direct_route(Route)
     end.
 
@@ -244,6 +244,14 @@ delete_trie_route(Route = #route{topic = Topic}) ->
         [_|_]   -> %% Remove route only
                    mnesia:delete_object(?ROUTE_TAB, Route, sticky_write);
         []      -> ok
+    end.
+
+%% @private
+-spec(maybe_trans(function(), list(any())) -> ok | {error, term()}).
+maybe_trans(Fun, Args) ->
+    case persistent_term:get(emqx_route_lock_type, key) of
+        key -> trans(Fun, Args);
+        _ -> mnesia:sync_dirty(Fun, Args)
     end.
 
 %% @private
