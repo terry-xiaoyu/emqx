@@ -38,12 +38,12 @@ init([]) ->
         modules => [emqx_router_helper]
     },
     PtTrie = #{
-        id => emqx_trie_pt,
-        start => {emqx_trie_pt, start_link, []},
+        id => emqx_preloaded_sub,
+        start => {emqx_preloaded_sub, start_link, []},
         restart => permanent,
         shutdown => 5000,
         type => worker,
-        modules => [emqx_trie_pt]
+        modules => [emqx_preloaded_sub]
     },
     %% Router pool
     RouterPool = emqx_pool_sup:spec([

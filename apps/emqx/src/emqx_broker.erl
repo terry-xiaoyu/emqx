@@ -234,9 +234,40 @@ publish(Msg) when is_record(Msg, message) ->
             }),
             [];
         Msg1 = #message{topic = Topic} ->
-            PersistRes = persist_publish(Msg1),
-            PersistRes ++ route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1))
+            case emqx_preloaded_sub:is_enabled() of
+                true ->
+                    publish_preloaded(Topic, Msg1);
+                false ->
+                    PersistRes = persist_publish(Msg1),
+                    PersistRes ++ route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1))
+            end
     end.
+
+publish_preloaded(Topic, Msg) ->
+    case publish_preloaded(emqx_preloaded_sub:match(Topic), Topic, Msg, #{}) of
+        [] ->
+            ok = emqx_hooks:run('message.dropped', [Msg, #{node => node()}, no_subscribers]),
+            ok = inc_dropped_cnt(Msg),
+            [];
+        Result ->
+            Result
+    end.
+
+publish_preloaded([], _Topic, _Msg, Result) ->
+    [{Node, Topic, {ok, Cnt}} || {{Node, Topic}, Cnt} <- maps:to_list(Result)];
+publish_preloaded([{ClientId, _} | Subs], Topic, Msg, Result) ->
+    case emqx_cm:lookup_channels(ClientId) of
+        [] ->
+            publish_preloaded(Subs, Topic, Msg, Result);
+        [SubPid | _] ->
+            Node = node(SubPid),
+            SubPid ! {deliver, Topic, Msg},
+            publish_preloaded(Subs, Topic, Msg, incr_sent_res({Node, Topic}, Result))
+    end.
+
+incr_sent_res(Dest, Result) ->
+    CntNow = maps:get(Dest, Result, 0) + 1,
+    Result#{Dest => CntNow}.
 
 persist_publish(Msg) ->
     case emqx_persistent_message:persist(Msg) of

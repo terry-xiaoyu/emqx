@@ -18,13 +18,16 @@
 %% To make this trie work in a cluster, the emqx_channel_conn table
 %% should be replicated to each of the node.
 
--module(emqx_trie_pt).
+-module(emqx_preloaded_sub).
 -behaviour(gen_server).
 
 -include("logger.hrl").
 
-%% Trie APIs
+%% APIs
 -export([
+    is_enabled/0,
+    get_subscription/2,
+    get_subopts/2,
     load/1,
     delete/2,
     clear/0,
@@ -78,14 +81,14 @@
 
 -define(SYNC_INTERVAL, 60000).
 -define(TRIE_SERVICE, ?MODULE).
--define(CLIENT_SUB_TAB, emqx_client_sub_info).
+-define(CLIENT_SUB_INFO_TAB, emqx_client_sub_info).
 -define(RLOG_SHARD, emqx_client_sub_info_shard).
 
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
 %%--------------------------------------------------------------------
 mnesia(boot) ->
-    ok = mria:create_table(?CLIENT_SUB_TAB, [
+    ok = mria:create_table(?CLIENT_SUB_INFO_TAB, [
         {type, ordered_set},
         {rlog_shard, ?RLOG_SHARD},
         {storage, disc_copies},
@@ -99,12 +102,26 @@ mnesia(boot) ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+is_enabled() ->
+    emqx_config:get([emqx_preloaded_sub, enable], true).
+
+get_subscription(ClientId, TopicFilter) ->
+    mnesia:dirty_read(?CLIENT_SUB_INFO_TAB, {ClientId, TopicFilter}).
+
+get_subopts(ClientId, TopicFilter) ->
+    case get_subscription(ClientId, TopicFilter) of
+        [#client_sub_info{subopts = SubOpts}] ->
+            SubOpts;
+        [] ->
+            undefined
+    end.
+
 -spec load(client_sub_info_source()) -> ok.
 load(ClientSubInfoSource) ->
     call({do_load, ClientSubInfoSource}).
 
-delete(ClientId, Topic) ->
-    call({do_delete, ClientId, Topic}).
+delete(ClientId, TopicFilter) ->
+    call({do_delete, ClientId, TopicFilter}).
 
 clear() ->
     call(do_clear).
@@ -116,8 +133,8 @@ match(Topic) ->
 %%% GenServer callbacks
 
 init([]) ->
-    _ = mria:wait_for_tables([?CLIENT_SUB_TAB]),
-    {ok, _} = mnesia:subscribe({table, ?CLIENT_SUB_TAB, detailed}),
+    _ = mria:wait_for_tables([?CLIENT_SUB_INFO_TAB]),
+    {ok, _} = mnesia:subscribe({table, ?CLIENT_SUB_INFO_TAB, detailed}),
     {ok, _} = mnesia:subscribe(activity),
     {ok, #{client_sub_info_written => #{}}, {continue, reload_trie}}.
 
@@ -127,14 +144,15 @@ handle_continue(reload_trie, State) ->
 
 handle_call({do_load, ClientSubInfoSource}, _From, LoopState) ->
     {reply, do_load(ClientSubInfoSource), LoopState};
-handle_call({do_delete, ClientId, Topic}, _From, LoopState) ->
-    {reply, do_delete(ClientId, Topic), LoopState};
+handle_call({do_delete, ClientId, TopicFilter}, _From, LoopState) ->
+    {reply, do_delete(ClientId, TopicFilter), LoopState};
 handle_call(do_clear, _From, LoopState) ->
     {reply, do_clear(), LoopState};
 handle_call(_Request, _From, LoopState) ->
     {reply, ok, LoopState}.
 
-handle_cast(_Msg, LoopState) ->
+handle_cast(Msg, LoopState) ->
+    ?SLOG(warning, #{msg => unexpected_cast, info => Msg}),
     {noreply, LoopState}.
 
 handle_info(
@@ -145,8 +163,8 @@ handle_info(
         {ok, {AddedSubInfo, RemovedSubInfo}} ->
             ?SLOG(debug, #{msg => sub_info_change_complete, activity_id => ActivityId}),
             Trie1 = lists:foldl(
-                fun(#client_sub_info{key = {ClientId, Topic}}, TrieAcc) ->
-                    do_delete_trie(emqx_topic:words(Topic), ClientId, TrieAcc)
+                fun(#client_sub_info{key = {ClientId, TopicFilter}}, TrieAcc) ->
+                    do_delete_trie(emqx_topic:words(TopicFilter), ClientId, TrieAcc)
                 end,
                 get_trie(),
                 RemovedSubInfo
@@ -182,7 +200,9 @@ handle_info(
                 {[NewClientSubInfo | AddedSubInfo], OldClientSubInfos ++ RemovedSubInfo}
         }
     }};
-handle_info({mnesia_table_event, {delete, schema, {schema, ?CLIENT_SUB_TAB}, _, _}}, _LoopState) ->
+handle_info(
+    {mnesia_table_event, {delete, schema, {schema, ?CLIENT_SUB_INFO_TAB}, _, _}}, _LoopState
+) ->
     put_trie(#{}),
     {noreply, _LoopState};
 handle_info(
@@ -224,9 +244,9 @@ do_load(ClientSubInfoList) when is_list(ClientSubInfoList) ->
     {atomic, ok} = mria:transaction(?RLOG_SHARD, fun() ->
         lists:foreach(
             fun(#client_sub_info{} = ClientSubInfo) ->
-                case mnesia:wread({?CLIENT_SUB_TAB, ClientSubInfo#client_sub_info.key}) of
+                case mnesia:wread({?CLIENT_SUB_INFO_TAB, ClientSubInfo#client_sub_info.key}) of
                     [_] -> ok;
-                    [] -> ok = mnesia:write(?CLIENT_SUB_TAB, ClientSubInfo, write)
+                    [] -> ok = mnesia:write(?CLIENT_SUB_INFO_TAB, ClientSubInfo, write)
                 end
             end,
             ClientSubInfoList
@@ -257,28 +277,28 @@ reload_trie() ->
                     do_add_trie(ClientSubInfo, TrieAcc)
                 end,
                 #{},
-                ?CLIENT_SUB_TAB
+                ?CLIENT_SUB_INFO_TAB
             )
         end)
     ).
 
 -spec do_add_trie(client_sub_info(), trie()) -> trie().
-do_add_trie(#client_sub_info{key = {ClientId, Topic}, subopts = SubOpts}, Trie) ->
-    do_add_trie(emqx_topic:words(Topic), ClientId, Topic, SubOpts, Trie).
+do_add_trie(#client_sub_info{key = {ClientId, TopicFilter}, subopts = SubOpts}, Trie) ->
+    do_add_trie(emqx_topic:words(TopicFilter), ClientId, TopicFilter, SubOpts, Trie).
 
-do_add_trie([], ClientId, Topic, SubOpts, Trie) ->
+do_add_trie([], ClientId, TopicFilter, SubOpts, Trie) ->
     Subsbrs = maps:get(subscribers, Trie, #{}),
-    Trie#{subscribers => Subsbrs#{ClientId => #{topic => Topic, subopts => SubOpts}}};
-do_add_trie(['#' | Words], _, Topic, _, _) when Words =/= [] ->
-    throw({invalid_topic, #{topic => Topic, reason => ?WC_NUM_NOT_AT_END}});
-do_add_trie([W | Words], ClientId, Topic, SubOpts, Trie) ->
+    Trie#{subscribers => Subsbrs#{ClientId => #{topic => TopicFilter, subopts => SubOpts}}};
+do_add_trie(['#' | Words], _, TopicFilter, _, _) when Words =/= [] ->
+    throw({invalid_topic, #{topic => TopicFilter, reason => ?WC_NUM_NOT_AT_END}});
+do_add_trie([W | Words], ClientId, TopicFilter, SubOpts, Trie) ->
     SubTrie = maps:get(W, Trie, #{}),
-    Trie#{W => do_add_trie(Words, ClientId, Topic, SubOpts, SubTrie)}.
+    Trie#{W => do_add_trie(Words, ClientId, TopicFilter, SubOpts, SubTrie)}.
 
 -spec do_delete(emqx_types:clientid(), emqx_types:topic()) -> ok.
-do_delete(ClientId, Topic) ->
+do_delete(ClientId, TopicFilter) ->
     {atomic, ok} = mria:transaction(?RLOG_SHARD, fun() ->
-        ok = mnesia:delete({?CLIENT_SUB_TAB, {ClientId, Topic}})
+        ok = mnesia:delete({?CLIENT_SUB_INFO_TAB, {ClientId, TopicFilter}})
     end),
     ok.
 
@@ -330,7 +350,8 @@ do_match_word(W, Words, Trie, Acc) ->
     end.
 
 do_clear() ->
-    clear_trie().
+    {atomic, ok} = mria:clear_table(?CLIENT_SUB_INFO_TAB),
+    ok.
 
 get_trie() ->
     persistent_term:get(?MODULE, #{}).
@@ -338,15 +359,11 @@ get_trie() ->
 put_trie(Trie) ->
     persistent_term:put(?MODULE, Trie).
 
-clear_trie() ->
-    persistent_term:erase(?MODULE),
-    ok.
-
 parse_sub_info_files(FileName) ->
     case hocon:files(FileName) of
         {ok, #{<<"subscriptions">> := Subs}} when is_list(Subs) ->
             try
-                {ok, parse_sub_info(Subs)}
+                {ok, parse_sub_info_list(Subs)}
             catch
                 throw:Reason ->
                     {error, Reason}
@@ -360,32 +377,40 @@ parse_sub_info_files(FileName) ->
             {error, #{reason => invalid_hocon_file, details => Reason}}
     end.
 
-parse_sub_info(Subs) ->
-    lists:map(
-        fun
-            (
-                #{<<"clientid">> := ClientId, <<"topic_filter">> := Topic, <<"qos">> := Qos} =
-                    SubInfo
-            ) ->
-                #client_sub_info{
-                    key = {ClientId, Topic},
-                    subopts = #{
-                        qos => Qos,
-                        rh => maps:get(<<"retain_handling">>, SubInfo, 0),
-                        rap => maps:get(<<"retain_as_published">>, SubInfo, 0),
-                        nl => maps:get(<<"no_local">>, SubInfo, 0)
-                    }
-                };
-            (SubInfo) ->
-                throw(#{
-                    reason => invalid_sub_info,
-                    details =>
-                        <<"one of the mandatory fields missing: 'clientid', 'topic_filter', 'qos'">>,
-                    sub_info => SubInfo
-                })
-        end,
-        Subs
-    ).
+parse_sub_info_list(Subs) ->
+    lists:map(fun parse_sub_info/1, Subs).
+
+parse_sub_info(
+    #{
+        <<"clientid">> := ClientId,
+        <<"topic_filter">> := TopicFilter,
+        <<"qos">> := Qos
+    } = SubInfo
+) ->
+    #client_sub_info{
+        key = {ClientId, TopicFilter},
+        subopts = maybe_with_subid(
+            #{
+                qos => Qos,
+                rh => maps:get(<<"retain_handling">>, SubInfo, 0),
+                rap => maps:get(<<"retain_as_published">>, SubInfo, 0),
+                nl => maps:get(<<"no_local">>, SubInfo, 0)
+            },
+            maps:get(<<"subid">>, SubInfo, undefined)
+        )
+    };
+parse_sub_info(SubInfo) ->
+    throw(#{
+        reason => invalid_sub_info,
+        details =>
+            <<"one of the mandatory fields missing: 'clientid', 'topic_filter', 'qos'">>,
+        sub_info => SubInfo
+    }).
+
+maybe_with_subid(SubOpts, undefined) ->
+    SubOpts;
+maybe_with_subid(SubOpts, SubId) ->
+    SubOpts#{subid => SubId}.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

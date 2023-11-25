@@ -273,7 +273,7 @@ destroy(Session) ->
 ) ->
     {ok, t()} | {error, emqx_types:reason_code()}.
 subscribe(ClientInfo, TopicFilter, SubOpts, Session) ->
-    SubOpts0 = ?IMPL(Session):get_subscription(TopicFilter, Session),
+    SubOpts0 = get_subopts(TopicFilter, Session),
     case ?IMPL(Session):subscribe(TopicFilter, SubOpts, Session) of
         {ok, Session1} ->
             ok = emqx_hooks:run(
@@ -421,9 +421,9 @@ enrich_deliver(ClientInfo, {deliver, Topic, Msg}, UpgradeQoS, Session) ->
     SubOpts =
         case Msg of
             #message{headers = #{redispatch_to := ?REDISPATCH_TO(Group, T)}} ->
-                ?IMPL(Session):get_subscription(emqx_topic:make_shared_record(Group, T), Session);
+                get_subopts(emqx_topic:make_shared_record(Group, T), Session);
             _ ->
-                ?IMPL(Session):get_subscription(Topic, Session)
+                get_subopts(Topic, Session)
         end,
     enrich_message(ClientInfo, Msg, SubOpts, UpgradeQoS).
 
@@ -640,6 +640,15 @@ choose_impl_candidates(0, _IsPSStoreEnabled = true) ->
     end;
 choose_impl_candidates(EI, _IsPSStoreEnabled = true) when EI > 0 ->
     [emqx_persistent_session_ds].
+
+get_subopts(TopicFilter, Session) ->
+    case emqx_preloaded_sub:is_enabled() of
+        true ->
+            ClientId = ?IMPL(Session):info(id, Session),
+            emqx_preloaded_sub:get_subopts(ClientId, TopicFilter);
+        false ->
+            ?IMPL(Session):get_subscription(TopicFilter, Session)
+    end.
 
 -compile({inline, [run_hook/2]}).
 run_hook(Name, Args) ->
