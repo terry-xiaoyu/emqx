@@ -103,7 +103,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 is_enabled() ->
-    emqx_config:get([emqx_preloaded_sub, enable], true).
+    emqx_config:get([emqx_preloaded_sub, enable], false).
 
 get_subscription(ClientId, TopicFilter) ->
     mnesia:dirty_read(?CLIENT_SUB_INFO_TAB, {ClientId, TopicFilter}).
