@@ -181,8 +181,8 @@ handle_info(
             ok
     end,
     {noreply, LoopState#{client_sub_info_written => maps:remove(ActivityId, SubInfoWritten)}};
-handle_info({mnesia_table_event, {write, schema, _, _, _}}, _LoopState) ->
-    {noreply, _LoopState};
+handle_info({mnesia_table_event, {write, schema, _, _, _}}, LoopState) ->
+    {noreply, LoopState};
 handle_info(
     {mnesia_table_event, {write, _, NewClientSubInfo, OldClientSubInfos, ActivityId}},
     #{client_sub_info_written := SubInfoWritten} = LoopState
@@ -201,10 +201,10 @@ handle_info(
         }
     }};
 handle_info(
-    {mnesia_table_event, {delete, schema, {schema, ?CLIENT_SUB_INFO_TAB}, _, _}}, _LoopState
+    {mnesia_table_event, {delete, schema, {schema, ?CLIENT_SUB_INFO_TAB}, _, _}}, LoopState
 ) ->
     put_trie(#{}),
-    {noreply, _LoopState};
+    {noreply, LoopState};
 handle_info(
     {mnesia_table_event, {delete, _, _, OldClientSubInfos, ActivityId}},
     #{client_sub_info_written := SubInfoWritten} = LoopState
