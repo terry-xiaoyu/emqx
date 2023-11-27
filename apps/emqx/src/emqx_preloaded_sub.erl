@@ -416,31 +416,33 @@ maybe_with_subid(SubOpts, SubId) ->
 -include_lib("eunit/include/eunit.hrl").
 
 load_trie_test() ->
+    mria:start(),
+    mnesia(boot),
+    {ok, _} = emqx_preloaded_sub:start_link(),
     ?assertEqual(
         ok,
-        do_load([
-            {<<"c1">>, {<<"t">>, #{qos => 0}}},
-            {<<"c2">>, {<<"t/a">>, #{qos => 0}}},
-            {<<"c3">>, {<<"t/a/b">>, #{qos => 0}}},
-            {<<"c4">>, {<<"t/a/+">>, #{qos => 0}}},
-            {<<"c5">>, {<<"t/a/+/c">>, #{qos => 0}}},
-            {<<"c6">>, {<<"t/#">>, #{qos => 0}}}
+        load([
+            #client_sub_info{key = {<<"c1">>, <<"t">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c2">>, <<"t/a">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c3">>, <<"t/a/b">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c4">>, <<"t/a/+">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c5">>, <<"t/a/+/c">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c6">>, <<"t/#">>}, subopts = #{qos => 0}}
         ])
     ),
-    ?assertEqual(
-        [
-            <<"t/a/b">>,
-            <<"t/a/+">>,
-            <<"t/#">>
-        ],
-        do_match(<<"t/a/b">>)
-    ),
-    ?assertEqual(
-        [
-            <<"t/a/+/c">>,
-            <<"t/#">>
-        ],
-        do_match(<<"t/a/b/c">>)
-    ).
+    %% wait for the trie to be loaded
+    _ = sys:get_state(emqx_preloaded_sub),
+    %io:format("CLIENT_SUB_INFO_TAB: ~p~n", [ets:tab2list(?CLIENT_SUB_INFO_TAB)]),
+    %io:format("get_trie(): ~p~n", [get_trie()]),
+
+    MatchR1 = do_match(<<"t/a/b">>),
+    ?assertMatch(#{topic := <<"t/a/b">>}, proplists:get_value(<<"c3">>, MatchR1)),
+    ?assertMatch(#{topic := <<"t/a/+">>}, proplists:get_value(<<"c4">>, MatchR1)),
+    ?assertMatch(#{topic := <<"t/#">>}, proplists:get_value(<<"c6">>, MatchR1)),
+
+    MatchR2 = do_match(<<"t/a/b/c">>),
+    ?assertMatch(#{topic := <<"t/a/+/c">>}, proplists:get_value(<<"c5">>, MatchR2)),
+    ?assertMatch(#{topic := <<"t/#">>}, proplists:get_value(<<"c6">>, MatchR2)),
+    ok.
 
 -endif.
