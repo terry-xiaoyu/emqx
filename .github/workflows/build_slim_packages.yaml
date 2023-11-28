@@ -51,8 +51,8 @@ jobs:
       fail-fast: false
       matrix:
         profile:
-          - ["emqx", "25.3.2-2", "ubuntu20.04", "elixir"]
-          - ["emqx-enterprise", "25.3.2-2", "ubuntu20.04", "erlang"]
+          - ["emqx", "25.3.2-2", "ubuntu22.04", "elixir"]
+          - ["emqx-enterprise", "25.3.2-2", "ubuntu22.04", "erlang"]
 
     container: "ghcr.io/emqx/emqx-builder/${{ inputs.builder_vsn }}:${{ inputs.elixir_vsn }}-${{ matrix.profile[1] }}-${{ matrix.profile[2] }}"
 
@@ -95,36 +95,4 @@ jobs:
         path: |
           scripts/spellcheck
           _build/docgen/${{ matrix.profile[0] }}/schema-en.json
-        retention-days: 7
-
-  mac:
-    strategy:
-      fail-fast: false
-      matrix:
-        profile:
-        - emqx
-        otp:
-        - ${{ inputs.otp_vsn }}
-        os:
-        - macos-12-arm64
-
-    runs-on: ${{ matrix.os }}
-    env:
-      EMQX_NAME: ${{ matrix.profile }}
-
-    steps:
-    - uses: actions/checkout@v3
-    - uses: ./.github/actions/package-macos
-      with:
-        profile: ${{ matrix.profile }}
-        otp: ${{ matrix.otp }}
-        os: ${{ matrix.os }}
-        apple_id_password: ${{ secrets.APPLE_ID_PASSWORD }}
-        apple_developer_identity: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
-        apple_developer_id_bundle: ${{ secrets.APPLE_DEVELOPER_ID_BUNDLE }}
-        apple_developer_id_bundle_password: ${{ secrets.APPLE_DEVELOPER_ID_BUNDLE_PASSWORD }}
-    - uses: actions/upload-artifact@v3
-      with:
-        name: ${{ matrix.os }}
-        path: _packages/**/*
         retention-days: 7
