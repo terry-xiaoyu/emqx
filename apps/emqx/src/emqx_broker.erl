@@ -256,12 +256,12 @@ publish_preloaded(Topic, Msg) ->
 publish_preloaded([], _Topic, _Msg, Result) ->
     [{Node, Topic, {ok, Cnt}} || {{Node, Topic}, Cnt} <- maps:to_list(Result)];
 publish_preloaded([{ClientId, _} | Subs], Topic, Msg, Result) ->
-    case emqx_cm:lookup_channels(ClientId) of
+    case ets:lookup(emqx_channel_registry, ClientId) of
         [] ->
             publish_preloaded(Subs, Topic, Msg, Result);
-        [SubPid | _] ->
-            Node = node(SubPid),
-            SubPid ! {deliver, Topic, Msg},
+        [{channel, _, ChanPid} | _] ->
+            Node = node(ChanPid),
+            ChanPid ! {deliver, Topic, Msg},
             publish_preloaded(Subs, Topic, Msg, incr_sent_res({Node, Topic}, Result))
     end.
 

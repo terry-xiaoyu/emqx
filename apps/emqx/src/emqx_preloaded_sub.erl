@@ -22,6 +22,7 @@
 -behaviour(gen_server).
 
 -include("logger.hrl").
+-include("emqx_mqtt.hrl").
 
 %% APIs
 -export([
@@ -93,7 +94,13 @@ mnesia(boot) ->
         {rlog_shard, ?RLOG_SHARD},
         {storage, disc_copies},
         {record_name, client_sub_info},
-        {attributes, record_info(fields, client_sub_info)}
+        {attributes, record_info(fields, client_sub_info)},
+        {storage_properties, [
+            {ets, [
+                {read_concurrency, true},
+                {write_concurrency, true}
+            ]}
+        ]}
     ]).
 
 %%=============================================================================
@@ -106,7 +113,7 @@ is_enabled() ->
     emqx_config:get([emqx_preloaded_sub, enable], false).
 
 get_subscription(ClientId, TopicFilter) ->
-    mnesia:dirty_read(?CLIENT_SUB_INFO_TAB, {ClientId, TopicFilter}).
+    ets:lookup(?CLIENT_SUB_INFO_TAB, {ClientId, TopicFilter}).
 
 get_subopts(ClientId, TopicFilter) ->
     case get_subscription(ClientId, TopicFilter) of
@@ -164,7 +171,7 @@ handle_info(
             ?SLOG(debug, #{msg => sub_info_change_complete, activity_id => ActivityId}),
             Trie1 = lists:foldl(
                 fun(#client_sub_info{key = {ClientId, TopicFilter}}, TrieAcc) ->
-                    do_delete_trie(emqx_topic:words(TopicFilter), ClientId, TrieAcc)
+                    do_delete_trie(TopicFilter, ClientId, TrieAcc)
                 end,
                 get_trie(),
                 RemovedSubInfo
@@ -203,7 +210,7 @@ handle_info(
 handle_info(
     {mnesia_table_event, {delete, schema, {schema, ?CLIENT_SUB_INFO_TAB}, _, _}}, LoopState
 ) ->
-    put_trie(#{}),
+    put_trie(new_trie()),
     {noreply, LoopState};
 handle_info(
     {mnesia_table_event, {delete, _, _, OldClientSubInfos, ActivityId}},
@@ -276,7 +283,7 @@ reload_trie() ->
                 fun(ClientSubInfo, TrieAcc) ->
                     do_add_trie(ClientSubInfo, TrieAcc)
                 end,
-                #{},
+                new_trie(),
                 ?CLIENT_SUB_INFO_TAB
             )
         end)
@@ -284,12 +291,26 @@ reload_trie() ->
 
 -spec do_add_trie(client_sub_info(), trie()) -> trie().
 do_add_trie(#client_sub_info{key = {ClientId, TopicFilter}, subopts = SubOpts}, Trie) ->
-    do_add_trie(emqx_topic:words(TopicFilter), ClientId, TopicFilter, SubOpts, Trie).
+    #{root := RootTrie, non_wildcard_subs := NonWildcardSubs} = Trie,
+    Words = emqx_topic:tokens(TopicFilter),
+    case has_wildcard(Words) of
+        true ->
+            Trie#{root => do_add_trie(Words, ClientId, TopicFilter, SubOpts, RootTrie)};
+        false ->
+            Subs = maps:get(TopicFilter, NonWildcardSubs, #{}),
+            Trie#{
+                non_wildcard_subs => NonWildcardSubs#{
+                    TopicFilter => Subs#{
+                        ClientId => #{topic => TopicFilter, subopts => SubOpts}
+                    }
+                }
+            }
+    end.
 
 do_add_trie([], ClientId, TopicFilter, SubOpts, Trie) ->
     Subsbrs = maps:get(subscribers, Trie, #{}),
     Trie#{subscribers => Subsbrs#{ClientId => #{topic => TopicFilter, subopts => SubOpts}}};
-do_add_trie(['#' | Words], _, TopicFilter, _, _) when Words =/= [] ->
+do_add_trie([<<"#">> | Words], _, TopicFilter, _, _) when Words =/= [] ->
     throw({invalid_topic, #{topic => TopicFilter, reason => ?WC_NUM_NOT_AT_END}});
 do_add_trie([W | Words], ClientId, TopicFilter, SubOpts, Trie) ->
     SubTrie = maps:get(W, Trie, #{}),
@@ -302,6 +323,21 @@ do_delete(ClientId, TopicFilter) ->
     end),
     ok.
 
+do_delete_trie(TopicFilter, ClientId, Trie) when is_binary(TopicFilter) ->
+    #{root := RootTrie, non_wildcard_subs := NonWildcardSubs} = Trie,
+    Words = emqx_topic:tokens(TopicFilter),
+    case has_wildcard(Words) of
+        true ->
+            Trie#{root => do_delete_trie(Words, ClientId, RootTrie)};
+        false ->
+            Subs = maps:get(TopicFilter, NonWildcardSubs, #{}),
+            case maps:remove(ClientId, Subs) of
+                Subsbrs when map_size(Subsbrs) > 0 ->
+                    Trie#{non_wildcard_subs => maps:put(TopicFilter, Subsbrs, NonWildcardSubs)};
+                _ ->
+                    Trie#{non_wildcard_subs => maps:remove(TopicFilter, NonWildcardSubs)}
+            end
+    end;
 do_delete_trie([], ClientId, Trie) ->
     case maps:remove(ClientId, maps:get(subscribers, Trie, #{})) of
         Subscribers when map_size(Subscribers) > 0 ->
@@ -322,19 +358,26 @@ do_delete_trie([W | Words], ClientId, Trie) ->
             maps:remove(W, Trie)
     end.
 
-do_match(Topic) ->
-    do_match(emqx_topic:words(Topic), get_trie(), []).
+do_match(#share{topic = Topic}) ->
+    do_match(Topic);
+do_match(Topic) when is_binary(Topic) ->
+    #{root := RootTrie, non_wildcard_subs := NonWildcardSubs} = get_trie(),
+    maps:to_list(maps:get(Topic, NonWildcardSubs, #{})) ++
+        case map_size(RootTrie) > 0 of
+            true -> do_match(emqx_topic:tokens(Topic), RootTrie, []);
+            false -> []
+        end.
 
 do_match([], Trie, Acc) ->
     Subsbrs = maps:get(subscribers, Trie, #{}),
     'maybe_append_#_subsbrs'(Trie, maps:to_list(Subsbrs) ++ Acc);
 do_match([W | Words], Trie, Acc) ->
     ExactlySubsbrs = do_match_word(W, Words, Trie, Acc),
-    WildcardPlusSubsbrs = do_match_word('+', Words, Trie, Acc),
+    WildcardPlusSubsbrs = do_match_word(<<"+">>, Words, Trie, Acc),
     'maybe_append_#_subsbrs'(Trie, ExactlySubsbrs ++ WildcardPlusSubsbrs).
 
 'maybe_append_#_subsbrs'(Trie, Subsbrs) ->
-    case maps:get('#', Trie, #{}) of
+    case maps:get(<<"#">>, Trie, #{}) of
         #{subscribers := WildcardNumSubsbrs} ->
             maps:to_list(WildcardNumSubsbrs) ++ Subsbrs;
         _ ->
@@ -353,8 +396,11 @@ do_clear() ->
     {atomic, ok} = mria:clear_table(?CLIENT_SUB_INFO_TAB),
     ok.
 
+new_trie() ->
+    #{root => #{}, non_wildcard_subs => #{}}.
+
 get_trie() ->
-    persistent_term:get(?MODULE, #{}).
+    persistent_term:get(?MODULE, new_trie()).
 
 put_trie(Trie) ->
     persistent_term:put(?MODULE, Trie).
@@ -412,6 +458,16 @@ maybe_with_subid(SubOpts, undefined) ->
 maybe_with_subid(SubOpts, SubId) ->
     SubOpts#{subid => SubId}.
 
+-spec has_wildcard(emqx_types:words()) -> true | false.
+has_wildcard([<<"#">> | _]) ->
+    true;
+has_wildcard([<<"+">> | _]) ->
+    true;
+has_wildcard([_H | T]) ->
+    has_wildcard(T);
+has_wildcard([]) ->
+    false.
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -427,22 +483,78 @@ load_trie_test() ->
             #client_sub_info{key = {<<"c3">>, <<"t/a/b">>}, subopts = #{qos => 0}},
             #client_sub_info{key = {<<"c4">>, <<"t/a/+">>}, subopts = #{qos => 0}},
             #client_sub_info{key = {<<"c5">>, <<"t/a/+/c">>}, subopts = #{qos => 0}},
-            #client_sub_info{key = {<<"c6">>, <<"t/#">>}, subopts = #{qos => 0}}
+            #client_sub_info{key = {<<"c6">>, <<"t/#">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c7">>, <<"/t/a/b/">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c8">>, <<"/t/a/b/#">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c9">>, <<"/t//a/b">>}, subopts = #{qos => 0}},
+            #client_sub_info{key = {<<"c10">>, <<"/t//+/b">>}, subopts = #{qos => 0}}
         ])
     ),
     %% wait for the trie to be loaded
     _ = sys:get_state(emqx_preloaded_sub),
-    %io:format("CLIENT_SUB_INFO_TAB: ~p~n", [ets:tab2list(?CLIENT_SUB_INFO_TAB)]),
-    %io:format("get_trie(): ~p~n", [get_trie()]),
+    io:format("CLIENT_SUB_INFO_TAB: ~p~n", [ets:tab2list(?CLIENT_SUB_INFO_TAB)]),
+    io:format("get_trie(): ~p~n", [get_trie()]),
+
+    ?assertMatch(
+        [
+            {<<"c1">>, #{topic := <<"t">>}},
+            {<<"c6">>, #{topic := <<"t/#">>}}
+        ],
+        do_match(<<"t">>)
+    ),
 
     MatchR1 = do_match(<<"t/a/b">>),
+    ?assertEqual(3, length(MatchR1)),
     ?assertMatch(#{topic := <<"t/a/b">>}, proplists:get_value(<<"c3">>, MatchR1)),
     ?assertMatch(#{topic := <<"t/a/+">>}, proplists:get_value(<<"c4">>, MatchR1)),
     ?assertMatch(#{topic := <<"t/#">>}, proplists:get_value(<<"c6">>, MatchR1)),
 
     MatchR2 = do_match(<<"t/a/b/c">>),
+    ?assertEqual(2, length(MatchR2)),
     ?assertMatch(#{topic := <<"t/a/+/c">>}, proplists:get_value(<<"c5">>, MatchR2)),
     ?assertMatch(#{topic := <<"t/#">>}, proplists:get_value(<<"c6">>, MatchR2)),
+
+    MatchR3 = do_match(<<"/t/a/b/">>),
+    ?assertEqual(2, length(MatchR3)),
+    ?assertMatch(#{topic := <<"/t/a/b/">>}, proplists:get_value(<<"c7">>, MatchR3)),
+    ?assertMatch(#{topic := <<"/t/a/b/#">>}, proplists:get_value(<<"c8">>, MatchR3)),
+
+    MatchR4 = do_match(<<"/t/a/b">>),
+    ?assertEqual(1, length(MatchR4)),
+    ?assertMatch(#{topic := <<"/t/a/b/#">>}, proplists:get_value(<<"c8">>, MatchR4)),
+
+    MatchR5 = do_match(<<"/t//a/b">>),
+    ?assertEqual(2, length(MatchR5)),
+    ?assertMatch(#{topic := <<"/t//a/b">>}, proplists:get_value(<<"c9">>, MatchR5)),
+    ?assertMatch(#{topic := <<"/t//+/b">>}, proplists:get_value(<<"c10">>, MatchR5)),
+
+    ok = do_delete(<<"c1">>, <<"t">>),
+    timer:sleep(50),
+    ?assertMatch([{<<"c6">>, #{topic := <<"t/#">>}}], do_match(<<"t">>)),
+
+    ok = do_delete(<<"c6">>, <<"t/#">>),
+    timer:sleep(50),
+    ?assertEqual([], do_match(<<"t">>)),
+
+    MatchR6 = do_match(<<"t/a/b">>),
+    ?assertEqual(2, length(MatchR6)),
+    ?assertMatch(#{topic := <<"t/a/b">>}, proplists:get_value(<<"c3">>, MatchR6)),
+    ?assertMatch(#{topic := <<"t/a/+">>}, proplists:get_value(<<"c4">>, MatchR6)),
+
+    MatchR7 = do_match(<<"t/a/b/c">>),
+    ?assertEqual(1, length(MatchR7)),
+    ?assertMatch(#{topic := <<"t/a/+/c">>}, proplists:get_value(<<"c5">>, MatchR7)),
+
+    ok = do_delete(<<"c2">>, <<"t/a">>),
+    ok = do_delete(<<"c3">>, <<"t/a/b">>),
+    ok = do_delete(<<"c4">>, <<"t/a/+">>),
+    ok = do_delete(<<"c5">>, <<"t/a/+/c">>),
+    ok = do_delete(<<"c7">>, <<"/t/a/b/">>),
+    ok = do_delete(<<"c8">>, <<"/t/a/b/#">>),
+    ok = do_delete(<<"c9">>, <<"/t//a/b">>),
+    ok = do_delete(<<"c10">>, <<"/t//+/b">>),
+    timer:sleep(50),
+    ?assertEqual(new_trie(), get_trie()),
     ok.
 
 -endif.
