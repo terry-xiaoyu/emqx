@@ -27,11 +27,11 @@
         , {load_module, emqx_ds_builtin_db_sup}
         , {load_module, emqx_ds_builtin_sup}
         , {load_module, emqx_ds_replication_layer}
-        , {load_module, emqx_ds_replication_layer_egress}
         , {load_module, emqx_ds_storage_layer}
         , {load_module, emqx_broker_helper}
         , {load_module, emqx_shared_sub}
         , {load_module, emqx_mgmt_api_metrics}
+        , {update, emqx_ds_replication_layer_egress, {advanced, #{}}}
         ],
     post_upgrade_callbacks =>
         [ {pr12781_init_db_metrics, pr12781_termiate_db_metrics}

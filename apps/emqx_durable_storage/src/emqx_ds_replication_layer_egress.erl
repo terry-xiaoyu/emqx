@@ -35,6 +35,8 @@
 %% behavior callbacks:
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-export([code_change/3]).
+
 %% internal exports:
 -export([]).
 
@@ -163,6 +165,21 @@ handle_info(?flush, S) ->
     {noreply, flush(S)};
 handle_info(_Info, S) ->
     {noreply, S}.
+
+code_change(_FromVsn, {s, DB, Shard, _Leader, N, TRef, Batch, PendingR}, _Extra) ->
+    MetricsId = emqx_ds_builtin_metrics:shard_metric_id(DB, Shard),
+    {ok, #s{
+        db = DB,
+        shard = Shard,
+        n = N,
+        tref = TRef,
+        queue = queue:from_list(Batch),
+        metrics_id = MetricsId,
+        pending_replies = PendingR
+    }};
+code_change(FromVsn, S, Extra) ->
+    io:format("Code change ignored, FromVsn: ~p, State: ~p, Extra: ~p~n", [FromVsn, S, Extra]),
+    {ok, S}.
 
 terminate(_Reason, _S) ->
     ok.
