@@ -376,7 +376,7 @@ flush(_Last = #emqx_monit{data = LastData}, Now = #emqx_monit{data = NowData}) -
 delta(LastData, NowData) ->
     Fun =
         fun(Key, Data) ->
-            Value = maps:get(Key, NowData) - maps:get(Key, LastData),
+            Value = maps:get(Key, NowData, 0) - maps:get(Key, LastData, 0),
             Data#{Key => Value}
         end,
     lists:foldl(Fun, NowData, ?DELTA_SAMPLER_LIST).

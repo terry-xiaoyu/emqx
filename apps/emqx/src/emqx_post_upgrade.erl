@@ -19,7 +19,9 @@
 %% PR#12781
 -export([
     pr12781_init_db_metrics/1,
-    pr12781_termiate_db_metrics/1
+    pr12781_termiate_db_metrics/1,
+    pr12781_create_persist_msg_pterm/1,
+    pr12781_erase_persist_msg_pterm/1
 ]).
 
 %% PR#12765
@@ -43,6 +45,13 @@ pr12781_init_db_metrics(_FromVsn) ->
 pr12781_termiate_db_metrics(_ToVsn) ->
     #{id := Id} = emqx_ds_builtin_metrics:child_spec(),
     ok = ensure_child_deleted(emqx_ds_builtin_sup, Id).
+
+pr12781_create_persist_msg_pterm(_FromVsn) ->
+    IsEnabled = lists:any(fun emqx_persistent_message:is_persistence_enabled/1, Zones),
+    persistent_term:put(emqx_message_persistence_enabled, IsEnabled).
+
+pr12781_erase_persist_msg_pterm(_ToVsn) ->
+    persistent_term:erase(emqx_message_persistence_enabled).
 
 pr12765_update_stats_timer(_FromVsn) ->
     emqx_stats:update_interval(broker_stats, fun emqx_broker_helper:stats_fun/0).
