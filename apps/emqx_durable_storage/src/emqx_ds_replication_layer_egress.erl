@@ -104,6 +104,16 @@ store_batch(DB, Messages, Opts) ->
 -record(s, {
     db :: emqx_ds:db(),
     shard :: emqx_ds_replication_layer:shard_id(),
+    leader :: node(),
+    n = 0 :: non_neg_integer(),
+    tref :: reference(),
+    batch = [] :: [emqx_types:message()],
+    pending_replies = [] :: [gen_server:from()]
+}).
+
+-record(s_v1, {
+    db :: emqx_ds:db(),
+    shard :: emqx_ds_replication_layer:shard_id(),
     metrics_id :: emqx_ds_builtin_metrics:shard_metrics_id(),
     n_retries = 0 :: non_neg_integer(),
     %% FIXME: Currently max_retries is always 0, because replication
@@ -123,7 +133,7 @@ init([DB, Shard]) ->
     logger:update_process_metadata(#{domain => [emqx, ds, egress, DB]}),
     MetricsId = emqx_ds_builtin_metrics:shard_metric_id(DB, Shard),
     ok = emqx_ds_builtin_metrics:init_for_shard(MetricsId),
-    S = #s{
+    S = #s_v1{
         db = DB,
         shard = Shard,
         metrics_id = MetricsId,
@@ -140,9 +150,9 @@ handle_call(
         payload_bytes = NBytes
     },
     From,
-    S0 = #s{pending_replies = Replies0}
+    S0 = #s_v1{pending_replies = Replies0}
 ) ->
-    S = S0#s{pending_replies = [From | Replies0]},
+    S = S0#s_v1{pending_replies = [From | Replies0]},
     {noreply, enqueue(Sync, Atomic, Msgs, NMsgs, NBytes, S)};
 handle_call(_Call, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -166,15 +176,50 @@ handle_info(?flush, S) ->
 handle_info(_Info, S) ->
     {noreply, S}.
 
-code_change(_FromVsn, {s, DB, Shard, _Leader, N, TRef, Batch, PendingR}, _Extra) ->
+code_change(
+    "5.6.1" = _FromEmqxVsn,
+    #s{
+        db = DB,
+        shard = Shard,
+        leader = _Leader,
+        n = N,
+        tref = TRef,
+        batch = Batch,
+        pending_replies = PendingR
+    },
+    _Extra
+) ->
     MetricsId = emqx_ds_builtin_metrics:shard_metric_id(DB, Shard),
-    {ok, #s{
+    {ok, #s_v1{
         db = DB,
         shard = Shard,
         n = N,
         tref = TRef,
         queue = queue:from_list(Batch),
         metrics_id = MetricsId,
+        pending_replies = PendingR
+    }};
+code_change(
+    {down, "5.6.1" = _ToEmqxVsn},
+    #s_v1{
+        db = DB,
+        shard = Shard,
+        n = N,
+        tref = TRef,
+        queue = Q,
+        metrics_id = MetricsId,
+        pending_replies = PendingR
+    },
+    _Extra
+) ->
+    MetricsId = emqx_ds_builtin_metrics:shard_metric_id(DB, Shard),
+    {ok, #s{
+        db = DB,
+        shard = Shard,
+        leader = node(),
+        n = N,
+        tref = TRef,
+        batch = queue:to_list(Q),
         pending_replies = PendingR
     }};
 code_change(FromVsn, S, Extra) ->
@@ -198,7 +243,7 @@ enqueue(
     Msgs,
     BatchSize,
     BatchBytes,
-    S0 = #s{n = NMsgs0, n_bytes = NBytes0, queue = Q0}
+    S0 = #s_v1{n = NMsgs0, n_bytes = NBytes0, queue = Q0}
 ) ->
     %% At this point we don't split the batches, even when they aren't
     %% atomic. It wouldn't win us anything in terms of memory, and
@@ -218,7 +263,7 @@ enqueue(
             %% The buffer is empty, we enqueue the atomic batch in its
             %% entirety:
             Q1 = lists:foldl(fun queue:in/2, Q0, Msgs),
-            S1 = S0#s{n = NMsgs, n_bytes = NBytes, queue = Q1},
+            S1 = S0#s_v1{n = NMsgs, n_bytes = NBytes, queue = Q1},
             case NMsgs >= NMax orelse NBytes >= NBytesMax of
                 true ->
                     flush(S1);
@@ -233,10 +278,10 @@ enqueue(
 flush(S) ->
     do_flush(cancel_timer(S)).
 
-do_flush(S0 = #s{n = 0}) ->
+do_flush(S0 = #s_v1{n = 0}) ->
     S0;
 do_flush(
-    S = #s{
+    S = #s_v1{
         queue = Q,
         pending_replies = Replies,
         db = DB,
@@ -254,15 +299,15 @@ do_flush(
     case Result of
         ok ->
             emqx_ds_builtin_metrics:inc_egress_batches(Metrics),
-            emqx_ds_builtin_metrics:inc_egress_messages(Metrics, S#s.n),
-            emqx_ds_builtin_metrics:inc_egress_bytes(Metrics, S#s.n_bytes),
+            emqx_ds_builtin_metrics:inc_egress_messages(Metrics, S#s_v1.n),
+            emqx_ds_builtin_metrics:inc_egress_bytes(Metrics, S#s_v1.n_bytes),
             ?tp(
                 emqx_ds_replication_layer_egress_flush,
                 #{db => DB, shard => Shard, batch => Messages}
             ),
             lists:foreach(fun(From) -> gen_server:reply(From, ok) end, Replies),
             erlang:garbage_collect(),
-            S#s{
+            S#s_v1{
                 n = 0,
                 n_bytes = 0,
                 queue = queue:new(),
@@ -285,7 +330,7 @@ do_flush(
             %% We block the gen_server until the next retry.
             BlockTime = ?COOLDOWN_MIN + rand:uniform(?COOLDOWN_MAX - ?COOLDOWN_MIN),
             timer:sleep(BlockTime),
-            S#s{n_retries = Retries + 1};
+            S#s_v1{n_retries = Retries + 1};
         Err ->
             ?tp(
                 debug,
@@ -303,7 +348,7 @@ do_flush(
                 fun(From) -> gen_server:reply(From, Reply) end, Replies
             ),
             erlang:garbage_collect(),
-            S#s{
+            S#s_v1{
                 n = 0,
                 n_bytes = 0,
                 queue = queue:new(),
@@ -387,18 +432,18 @@ compose_errors({error, recoverable, _}, {error, unrecoverable, Err}) ->
 compose_errors(ErrAcc, _Err) ->
     ErrAcc.
 
-ensure_timer(S = #s{tref = undefined}) ->
+ensure_timer(S = #s_v1{tref = undefined}) ->
     Interval = application:get_env(emqx_durable_storage, egress_flush_interval, 100),
     Tref = erlang:send_after(Interval, self(), ?flush),
-    S#s{tref = Tref};
+    S#s_v1{tref = Tref};
 ensure_timer(S) ->
     S.
 
-cancel_timer(S = #s{tref = undefined}) ->
+cancel_timer(S = #s_v1{tref = undefined}) ->
     S;
-cancel_timer(S = #s{tref = TRef}) ->
+cancel_timer(S = #s_v1{tref = TRef}) ->
     _ = erlang:cancel_timer(TRef),
-    S#s{tref = undefined}.
+    S#s_v1{tref = undefined}.
 
 %% @doc Return approximate size of the MQTT message (it doesn't take
 %% all things into account, for example headers and extras)

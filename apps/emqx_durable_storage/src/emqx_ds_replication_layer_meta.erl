@@ -419,7 +419,8 @@ open_db_trans(DB, CreateOpts) ->
 
 -spec allocate_shards_trans(emqx_ds:db()) -> [emqx_ds_replication_layer:shard_id()].
 allocate_shards_trans(DB) ->
-    Opts = #{n_shards := NShards, n_sites := NSites} = db_config_trans(DB),
+    Opts = #{n_shards := NShards} = db_config_trans(DB),
+    NSites = maps:get(n_sites, Opts, 1),
     Nodes = mnesia:match_object(?NODE_TAB, ?NODE_PAT(), read),
     case length(Nodes) of
         N when N >= NSites ->
