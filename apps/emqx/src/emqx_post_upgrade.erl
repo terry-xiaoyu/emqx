@@ -21,7 +21,9 @@
     pr12781_init_db_metrics/1,
     pr12781_termiate_db_metrics/1,
     pr12781_create_persist_msg_pterm/1,
-    pr12781_erase_persist_msg_pterm/1
+    pr12781_erase_persist_msg_pterm/1,
+    pr12781_trans_tables/1,
+    pr12781_revert_tables/1
 ]).
 
 %% PR#12765
@@ -47,11 +49,31 @@ pr12781_termiate_db_metrics(_ToVsn) ->
     ok = ensure_child_deleted(emqx_ds_builtin_sup, Id).
 
 pr12781_create_persist_msg_pterm(_FromVsn) ->
-    IsEnabled = lists:any(fun emqx_persistent_message:is_persistence_enabled/1, Zones),
+    IsEnabled = emqx_config:get([session_persistence, enable], false),
     persistent_term:put(emqx_message_persistence_enabled, IsEnabled).
 
 pr12781_erase_persist_msg_pterm(_ToVsn) ->
     persistent_term:erase(emqx_message_persistence_enabled).
+
+pr12781_trans_tables(_FromVsn) ->
+    mnesia:transform_table(
+        emqx_ds_builtin_shard_tab,
+        fun({emqx_ds_builtin_shard_tab, Shard, ReplicaSet, _InSyncReplicas, _Leader, Misc}) ->
+            {emqx_ds_builtin_shard_tab, Shard, [binary:encode_hex(R) || R <- ReplicaSet], undefined,
+                Misc}
+        end,
+        [shard, replica_set, target_set, misc]
+    ).
+
+pr12781_revert_tables(_ToVsn) ->
+    mnesia:transform_table(
+        emqx_ds_builtin_shard_tab,
+        fun({emqx_ds_builtin_shard_tab, Shard, ReplicaSet, _, Misc}) ->
+            {emqx_ds_builtin_shard_tab, Shard, [binary:decode_hex(R) || R <- ReplicaSet], [],
+                node(), Misc}
+        end,
+        [shard, replica_set, in_sync_replicas, leader, misc]
+    ).
 
 pr12765_update_stats_timer(_FromVsn) ->
     emqx_stats:update_interval(broker_stats, fun emqx_broker_helper:stats_fun/0).
