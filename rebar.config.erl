@@ -170,8 +170,7 @@ project_app_dirs(Edition) ->
 
 plugins() ->
     [
-        {emqx_relup_gen,
-            {git, "https://github.com/terry-xiaoyu/emqx-relup-gen.git", {branch, "main"}}},
+        {emqx_relup, {git, "https://github.com/emqx/emqx-relup.git", {branch, "main"}}},
         %% emqx main project does not require port-compiler
         %% pin at root level for deterministic
         {pc, "v1.14.0"}
