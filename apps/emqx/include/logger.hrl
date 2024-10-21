@@ -29,7 +29,7 @@
         true ->
             logger:log(
                 Level,
-                (Data),
+                emqx_utils_log:with_hint_msg(Data),
                 maps:merge(Meta, #{
                     mfa => {?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY},
                     line => ?LINE
